@@ -1,10 +1,11 @@
 use std::sync::{Arc, OnceLock};
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use gpui_component::*;
-use crate::state::app_state::{AppState, Theme, Cookies, UserProfile};
-use crate::components::AnimatedAvatar;
+use crate::state::app_state::{AppState, Theme, Cookies, UserProfile, VideoInfo, Page};
 use qrcode::QrCode;
 use qrcode::render::svg;
+use gpui_component::input::{InputState, InputEvent};
 
 // Bilibili API 的标准 User-Agent
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -27,13 +28,255 @@ fn get_runtime_handle() -> tokio::runtime::Handle {
 
 pub struct HomeView {
     app_state: Entity<AppState>,
+    search_input: Entity<InputState>,
 }
 
 impl HomeView {
-    pub fn new(app_state: Entity<AppState>, _window: &Window, _cx: &mut Context<Self>) -> Self {
-        Self { app_state }
+    pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // 创建输入框状态，设置占位符
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("搜索你感兴趣的内容...")
+        });
+        
+        // 订阅输入事件 - 增加详细日志
+        let app_state_clone = app_state.clone();
+        
+        println!("🎯 [HomeView::new] 创建输入框并订阅事件");
+        
+        cx.subscribe_in(&search_input, window, move |view, state, event, _window, cx| {
+            let event_name = match event {
+                InputEvent::Change => "Change",
+                InputEvent::PressEnter { .. } => "PressEnter",
+                InputEvent::Focus => "Focus",
+                InputEvent::Blur => "Blur",
+            };
+            println!("📨 [InputEvent] 收到输入事件: {}", event_name);
+            
+            match event {
+                InputEvent::Change => {
+                    // 输入内容改变时，更新到 AppState
+                    let text = state.read(cx).value().to_string();
+                    println!("✏️  [InputEvent::Change] 输入内容改变: '{}'", text);
+                    app_state_clone.update(cx, |s, _| {
+                        s.set_search_text(text.clone());
+                    });
+                    println!("💾 [InputEvent::Change] 已保存到 AppState");
+                }
+                InputEvent::PressEnter { secondary } => {
+                    // 按下 Enter 键时触发搜索
+                    println!("⌨️  [InputEvent::PressEnter] 按下 Enter 键，secondary: {}", secondary);
+                    let current_text = state.read(cx).value().to_string();
+                    println!("📝 [InputEvent::PressEnter] 当前输入内容: '{}'", current_text);
+                    Self::trigger_search(view, cx);
+                }
+                InputEvent::Focus => {
+                    println!("🎯 [InputEvent::Focus] 搜索框获得焦点");
+                    let current_text = state.read(cx).value().to_string();
+                    println!("📝 [InputEvent::Focus] 当前输入内容: '{}'", current_text);
+                }
+                InputEvent::Blur => {
+                    println!("💤 [InputEvent::Blur] 搜索框失去焦点");
+                    let current_text = state.read(cx).value().to_string();
+                    println!("📝 [InputEvent::Blur] 当前输入内容: '{}'", current_text);
+                }
+            }
+        }).detach();
+        
+        Self { 
+            app_state,
+            search_input,
+        }
     }
 
+    fn trigger_search(view: &mut Self, cx: &mut Context<Self>) {
+        println!("🚀 [trigger_search] 进入搜索函数");
+        
+        // 读取搜索框内容
+        let search_text = view.search_input.read_with(cx, |state, _| {
+            let value = state.value().to_string();
+            println!("📖 [trigger_search] 从 InputState 读取到的值: '{}'", value);
+            value
+        });
+        
+        println!("🔍 [trigger_search] 开始搜索，内容: '{}'", search_text);
+        
+        // 获取当前登录用户的 UID
+        let uid = view.app_state.read_with(cx, |s, _| {
+            s.user().and_then(|u| u.uname.clone())
+        });
+        
+        if uid.is_none() {
+            println!("❌ 用户未登录，无法搜索");
+            return;
+        }
+        
+        // 保存搜索文本到状态
+        view.app_state.update(cx, |s, _| {
+            s.set_search_text(search_text.clone());
+        });
+        
+        // 获取 Cookie
+        let cookie = view.app_state.read_with(cx, |s, _| {
+            s.cookie_header().unwrap_or_default()
+        });
+        
+        // 临时使用固定的 mid 进行测试
+        let mid = "3461574394120551"; // 测试用的 mid
+        
+        println!("🚀 开始获取 UID {} 的视频合集列表", mid);
+        
+        // 在后台线程中执行 API 调用
+        let app_state_for_update = view.app_state.clone();
+        
+        cx.spawn(async move |_: WeakEntity<HomeView>, mut _cx| {
+            let handle = get_runtime_handle();
+            let cookie_for_collections = cookie.clone();
+            
+            // 使用 Tokio runtime 执行异步请求
+            let result = handle.spawn(async move {
+                crate::api::bilibili::fetch_space_collections(
+                    mid,
+                    &cookie_for_collections,
+                    1,
+                    20
+                ).await
+            }).await;
+            
+            match result {
+                Ok(Ok(data)) => {
+                    println!("\n✅ 成功获取合集列表！");
+                    
+                    // 显示合集信息
+                    if let Some(seasons) = &data.items_lists.seasons_list {
+                        println!("\n📚 合集列表:");
+                        for season in seasons {
+                            println!("  - {} (ID: {}, 共{}个视频)", 
+                                season.meta.name,
+                                season.meta.season_id,
+                                season.meta.total
+                            );
+                            
+                            // 获取第一个合集的视频列表（测试）
+                            let season_id = season.meta.season_id.to_string();
+                            let mid = mid.to_string();
+                            let cookie = cookie.clone();
+                            let app_state_clone = app_state_for_update.clone();
+                            
+                            println!("\n🔍 正在获取合集 {} 的视频列表...", season.meta.name);
+                            
+                            let videos_result = handle.spawn(async move {
+                                crate::api::bilibili::fetch_all_season_archives(
+                                    &mid,
+                                    &season_id,
+                                    &cookie
+                                ).await
+                            }).await;
+                            
+                            match videos_result {
+                                Ok(Ok(videos)) => {
+                                    println!("\n✅ 成功获取 {} 个视频！", videos.len());
+                                    
+                                    // 转换为 VideoInfo 格式并下载封面
+                                    println!("\n📥 开始下载视频封面...");
+                                    let video_list: Vec<VideoInfo> = videos.iter().map(|v| {
+                                        let is_live_replay = v.title.contains("【直播回放】") || 
+                                                            v.title.contains("直播回放");
+                                        
+                                        // 下载封面到本地
+                                        let pic_url = if v.pic.starts_with("http://") {
+                                            v.pic.replace("http://", "https://")
+                                        } else {
+                                            v.pic.clone()
+                                        };
+                                        
+                                        let pic_local = match crate::utils::download_cover(&pic_url) {
+                                            Ok(path_arc) => {
+                                                let path_str = path_arc.display().to_string();
+                                                println!("[HomeView] ✅ 封面下载成功: {}", v.title);
+                                                Some(path_str)
+                                            }
+                                            Err(e) => {
+                                                println!("[HomeView] ❌ 封面下载失败: {} - {}", v.title, e);
+                                                None
+                                            }
+                                        };
+                                        
+                                        VideoInfo {
+                                            aid: v.aid,
+                                            bvid: v.bvid.clone(),
+                                            title: v.title.clone(),
+                                            pic: v.pic.clone(),
+                                            pic_local,
+                                            description: None,
+                                            pubdate: v.pubdate,
+                                            duration: v.duration,
+                                            view_count: v.stat.view,
+                                            like_count: v.stat.like.unwrap_or(0),
+                                            is_live_replay,
+                                        }
+                                    }).collect();
+                                    
+                                    println!("✅ 所有封面下载完成！");
+                                    
+                                    // 统计直播回放数量
+                                    let live_replay_count = video_list.iter()
+                                        .filter(|v| v.is_live_replay)
+                                        .count();
+                                    
+                                    println!("\n📊 统计:");
+                                    println!("  总视频数: {}", video_list.len());
+                                    println!("  直播回放: {} 个 🔴", live_replay_count);
+                                    println!("  普通视频: {} 个 ⚪", video_list.len() - live_replay_count);
+                                    
+                                    // 保存到状态并跳转到视频列表页面
+                                    let _ = _cx.update(|cx| {
+                                        app_state_clone.update(cx, |state, _| {
+                                            state.set_video_list(video_list);
+                                            state.set_selected_video_index(None);
+                                            state.set_page(Page::VideoList);
+                                        })
+                                    });
+                                    
+                                    println!("\n🎉 已跳转到视频列表页面");
+                                },
+                                Ok(Err(e)) => {
+                                    println!("❌ 获取视频列表失败: {}", e);
+                                },
+                                Err(e) => {
+                                    println!("❌ 任务执行失败: {}", e);
+                                }
+                            }
+                            
+                            // 只获取第一个合集进行测试
+                            break;
+                        }
+                    }
+                    
+                    // 显示系列信息
+                    if let Some(series) = &data.items_lists.series_list {
+                        println!("\n📖 系列列表:");
+                        for s in series {
+                            println!("  - {} (ID: {}, 共{}个视频)", 
+                                s.meta.name,
+                                s.meta.series_id,
+                                s.meta.total
+                            );
+                        }
+                    }
+                },
+                Ok(Err(e)) => {
+                    println!("❌ API 调用失败: {}", e);
+                },
+                Err(e) => {
+                    println!("❌ 任务执行失败: {}", e);
+                }
+            }
+            
+            Ok::<(), anyhow::Error>(())
+        }).detach();
+    }
+    
     fn start_qr_flow(app_state: Entity<AppState>, cx: &mut Context<Self>) {
         app_state.update(cx, |s, _| { s.set_qr_started(true); s.set_qr_status("正在获取二维码..."); });
         Self::request_qr(app_state, cx);
@@ -400,104 +643,180 @@ impl Render for HomeView {
             return div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
                 .bg(bg)
                 .text_color(fg)
                 .child(
+                    // 胶囊形搜索框 - 完全居中
                     div()
+                        .w(px(800.0))
+                        .h(px(56.0))
                         .flex()
-                        .flex_col()
+                        .flex_row()
                         .items_center()
-                        .gap_6()
-                        .p_8()
-                        .child(
-                            div()
-                                .text_2xl()
-                                .font_weight(FontWeight::BOLD)
-                                .child("欢迎回来！")
-                        )
-                        .child({
-                            if let Some(user) = self.app_state.read(cx).user() {
-                                // 克隆用户数据以避免借用检查问题
-                                let avatar_path = if let Some(local_path) = &user.face_local {
+                        .px_6()
+                        .pr_2()
+                        .mt(px(-32.0)) // 向上偏移以补偿 titlebar 高度
+                        .rounded_full() // 完全的胶囊形状
+                        .bg(match theme {
+                            Theme::Dark => rgb(0x1a1a1a), // 更淡的灰色
+                            Theme::Light => rgb(0xf8f8f8),
+                        })
 
-                                    local_path.clone()
-                                } else if let Some(face_url) = &user.face {
-                                    println!("[HomeView] 🌐 使用远程URL: {}", face_url);
-                                    face_url.clone()
-                                } else {
-                                    println!("[HomeView] ⚠️ 没有头像数据");
-                                    String::new()
-                                };
-                                let pendant_image = user.pendant_image.clone();
-                                let uname = user.uname.clone();
+                        .child(
+                            // 自定义输入框UI - 完全自定义的外观
+                            {
+                                let input_value = self.search_input.read(cx).value().to_string();
+                                let is_focused = self.search_input.read(cx).focus_handle(cx).is_focused(_window);
+                                let placeholder = if input_value.is_empty() { "搜索你感兴趣的内容..." } else { "" };
                                 
                                 div()
+                                    .flex_1()
+                                    .h_full()
                                     .flex()
-                                    .flex_col()
                                     .items_center()
-                                    .gap_4()
+                                    .px_4()
+                                    .relative() // 必须有relative才能让absolute的子元素正确定位
+                                    .cursor(CursorStyle::IBeam)
+                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|view, _, window, cx| {
+                                        // 点击时聚焦输入框
+                                        println!("🖱️  [CustomInput] 点击自定义输入框区域，聚焦输入框");
+                                        view.search_input.read(cx).focus_handle(cx).focus(window);
+                                        cx.notify(); // 触发重新渲染以显示光标
+                                    }))
                                     .child(
+                                        // 自定义的文本显示（flex容器，占满空间）
                                         div()
-                                            .relative()
-                                            .w(px(88.0))
-                                            .h(px(88.0))
                                             .flex()
+                                            .flex_1()
                                             .items_center()
-                                            .justify_center()
-                                            .child({
-                                                // 使用AnimatedAvatar组件支持动画webp
-                                                cx.new(|_| AnimatedAvatar::new(avatar_path, px(72.0)))
-                                            })
-                                            .child({
-                                                if let Some(p) = pendant_image {
-                                                    img(p.clone())
-                                                        .absolute()
-                                                        .top(px(-8.0))
-                                                        .left(px(-8.0))
-                                                        .w(px(88.0))
-                                                        .h(px(88.0))
-                                                        .object_fit(ObjectFit::Contain)
-                                                        .into_any_element()
-                                                } else {
-                                                    div().into_any_element()
-                                                }
+                                            .gap_2()
+                                            .child(
+                                                // 文本内容
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_lg()
+                                                            .font_weight(FontWeight::NORMAL)
+                                                            .text_color(if input_value.is_empty() {
+                                                                // 占位符颜色
+                                                                match theme {
+                                                                    Theme::Dark => rgb(0x666666),
+                                                                    Theme::Light => rgb(0x999999),
+                                                                }
+                                                            } else {
+                                                                // 输入文本颜色
+                                                                match theme {
+                                                                    Theme::Dark => rgb(0xffffff),
+                                                                    Theme::Light => rgb(0x333333),
+                                                                }
+                                                            })
+                                                            .child(if input_value.is_empty() { placeholder.to_string() } else { input_value.clone() })
+                                                    )
+                                                    .when(is_focused, |this| {
+                                                        // 光标 - 获得焦点时显示
+                                                        this.child(
+                                                            div()
+                                                                .w(px(2.0))
+                                                                .h(px(20.0))
+                                                                .bg(match theme {
+                                                                    Theme::Dark => rgb(0xffffff),
+                                                                    Theme::Light => rgb(0x333333),
+                                                                })
+                                                                .rounded_sm()
+                                                        )
+                                                    })
+                                            )
+                                            .when(!input_value.is_empty(), |this| {
+                                                // 清除按钮 - 有内容时显示
+                                                this.child(
+                                                    div()
+                                                        .w(px(20.0))
+                                                        .h(px(20.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded_full()
+                                                        .cursor(CursorStyle::PointingHand)
+                                                        .bg(match theme {
+                                                            Theme::Dark => rgb(0x333333),
+                                                            Theme::Light => rgb(0xcccccc),
+                                                        })
+                                                        .hover(|this| this.bg(match theme {
+                                                            Theme::Dark => rgb(0x444444),
+                                                            Theme::Light => rgb(0xbbbbbb),
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(match theme {
+                                                                    Theme::Dark => rgb(0xffffff),
+                                                                    Theme::Light => rgb(0x666666),
+                                                                })
+                                                                .child(IconName::Close)
+                                                        )
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|view, _, window, cx| {
+                                                            println!("🗑️  [CustomInput] 点击清除按钮");
+                                                            view.search_input.update(cx, |state, cx| {
+                                                                state.set_value("", window, cx);
+                                                            });
+                                                            cx.notify();
+                                                            cx.stop_propagation(); // 阻止事件冒泡
+                                                        }))
+                                                )
                                             })
                                     )
+                                    // 隐藏的真实Input（只用来处理键盘输入，不显示UI）
                                     .child(
                                         div()
-                                            .text_xl()
-                                            .child(uname.unwrap_or_else(|| "用户".to_string()))
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .w(px(1.0))
+                                            .h(px(1.0))
+                                            .overflow_hidden()
+                                            .child(
+                                                input::Input::new(&self.search_input)
+                                                    .w(px(1.0))
+                                                    .appearance(false)
+                                            )
                                     )
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .text_color(match theme { Theme::Dark => rgb(0xaaaaaa), Theme::Light => rgb(0x666666) })
-                                    .child("正在加载用户信息...")
-                                    .into_any_element()
                             }
-                        })
+                        )
                         .child(
-                            button::Button::new("logout")
-                                .outline()
-                                .label("退出登录")
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.app_state.update(cx, |s, _| {
-                                        s.set_logged_in(false);
-                                        s.set_cookies(Cookies::default());
-                                        s.set_user(UserProfile {
-                                            uname: None,
-                                            face: None,
-                                            face_local: None,
-                                            pendant_image: None,
-                                        });
-                                        s.set_qr_started(false);
-                                        s.set_qr_svg(None);
-                                        s.set_qrcode_key(None);
-                                        s.persist_login();
-                                    });
-                                    cx.notify();
+                            // 搜索按钮 - 在输入框内部，圆形，放大的图标
+                            div()
+                                .w(px(56.0))
+                                .h(px(56.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full() // 圆形按钮
+                                .cursor(CursorStyle::PointingHand)
+                                .hover(|style| style.bg(match theme {
+                                    Theme::Dark => rgb(0x2a2a2a),
+                                    Theme::Light => rgb(0xe8e8e8),
+                                }))
+                                .child(
+                                    div()
+                                        .text_xl() // 放大图标
+                                        .text_color(match theme {
+                                            Theme::Dark => rgb(0xaaaaaa),
+                                            Theme::Light => rgb(0x666666),
+                                        })
+                                        .child(IconName::Search)
+                                )
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|view, _, _, cx| {
+                                    println!("🔍 [SearchButton] 搜索按钮被点击");
+                                    let current_value = view.search_input.read(cx).value().to_string();
+                                    println!("📝 [SearchButton] 当前输入框的值: '{}'", current_value);
+                                    Self::trigger_search(view, cx);
+                                    cx.stop_propagation();
                                 }))
                         )
                 );

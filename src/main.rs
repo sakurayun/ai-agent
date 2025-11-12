@@ -1,6 +1,7 @@
 use gpui::*;
 use gpui_component::*;
 
+mod api;
 mod app;
 mod assets;
 mod components;
@@ -19,6 +20,16 @@ fn main() {
     let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
+        // 注册自定义字体 - MiSans
+        if let Some(font_data) = Assets::get("fonts/MiSansVF.ttf") {
+            cx.text_system()
+                .add_fonts(vec![font_data.data.into()])
+                .expect("Failed to load MiSans font");
+            println!("✓ MiSans字体加载成功");
+        } else {
+            eprintln!("⚠ 警告: 无法加载 MiSans 字体文件");
+        }
+        
         // TODO: 设置 HTTP client 以支持远程图片加载
         // 目前先使用本地头像缓存
         

@@ -231,16 +231,16 @@ impl Render for AnimatedAvatar {
         
         match animation_status {
             Some(AnimationStatus::Animated(animation_data)) => {
-                // 动画已就绪，播放动画
+                // 动画已就绪
                 let total_frames = animation_data.frames.len();
                 
                 // 从全局状态获取当前帧
                 let mut states = ANIMATION_PLAY_STATES.lock().unwrap();
                 let state = states.get_mut(&self.image_path).unwrap();
                 
-                // GPU预热阶段：快速循环所有帧一次，让GPUI加载到GPU
+                // GPU预热阶段：在后台预热，同时显示静态图片
                 if !state.warmed_up {
-                    // 每次render推进预热帧
+                    // 每次render推进一帧
                     state.warmup_frame += 1;
                     
                     if state.warmup_frame >= total_frames {
@@ -251,13 +251,37 @@ impl Render for AnimatedAvatar {
                         println!("[AnimatedAvatar] GPU预热完成: {}, 共{}帧", self.image_path, total_frames);
                     }
                     
-                    // 预热期间显示第一帧（用户看不到快速切换）
-                    let warmup_frame_to_show = &animation_data.frames[state.warmup_frame.min(total_frames - 1)];
+                    // 预热帧（用于GPU上传）
+                    let warmup_frame = animation_data.frames[state.warmup_frame.min(total_frames - 1)].clone();
                     drop(states);
                     
-                    img(warmup_frame_to_show.clone())
+                    // 使用相对定位叠加：下层是隐藏的预热帧，上层是可见的静态图片
+                    div()
+                        .relative()
                         .size(self.size)
-                        .rounded_full()
+                        .child(
+                            // 底层：预热帧（透明度0，触发GPU上传）
+                            img(warmup_frame)
+                                .size(self.size)
+                                .rounded_full()
+                                .opacity(0.0) // 完全透明，用户看不到
+                        )
+                        .child(
+                            // 上层：静态图片（用户看到的）
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .child(
+                                    match &self.image_source {
+                                        AvatarImageSource::Static(source) => {
+                                            img(source.clone())
+                                                .size(self.size)
+                                                .rounded_full()
+                                        }
+                                    }
+                                )
+                        )
                         .into_any_element()
                 } else {
                     // 正常播放模式

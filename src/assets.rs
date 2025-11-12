@@ -7,7 +7,9 @@ use rust_embed::RustEmbed;
 #[include = "*.png"]
 #[include = "*.svg"]
 #[include = "*.ico"]
+#[include = "*.ttf"]
 #[include = "icons/**/*.svg"]
+#[include = "fonts/**/*.ttf"]
 #[exclude = "*.DS_Store"]
 pub struct Assets;
 

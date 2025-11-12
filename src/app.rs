@@ -2,13 +2,17 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_component::IconName;
 
-use crate::views::{home::HomeView, settings::SettingsView};
+use crate::views::{home::HomeView, settings::SettingsView, video_list::VideoListView};
 use crate::state::app_state::{AppState, Page, Theme};
 use crate::components::AnimatedAvatar;
 
 pub struct App {
     state: Entity<AppState>,
     _animation_driver: Option<()>, // 占位符，实际的定时器在启动时创建
+    // 缓存视图实例，避免每次渲染都重新创建
+    home_view: Option<Entity<HomeView>>,
+    settings_view: Option<Entity<SettingsView>>,
+    video_list_view: Option<Entity<VideoListView>>,
 }
 
 impl App {
@@ -35,6 +39,9 @@ impl App {
         Self { 
             state,
             _animation_driver: Some(()),
+            home_view: None,
+            settings_view: None,
+            video_list_view: None,
         }
     }
 }
@@ -53,6 +60,7 @@ impl Render for App {
             .flex_row()
             .bg(rgb(0x000000))
             .text_color(rgb(0xffffff))
+            .font_family("MiSans VF") // 全局默认字体
             .child(
                 // Sidebar - DRAGGABLE REGION: Click and drag here to move the window
                 div()
@@ -260,14 +268,60 @@ impl Render for App {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_end()
+                            .justify_between() // 改为两端对齐
                             .bg(match self.state.read(cx).theme() {
-                                Theme::Dark => rgb(0x000000),
+                                Theme::Dark => rgb(0x080808), // 深色：主背景(0x000000) < 控制栏(0x080808) < 侧边栏(0x0d0d0d)
                                 Theme::Light => rgb(0xf8f8f8),
                             })
                             .cursor(CursorStyle::Arrow)
                             // 使用 GPUI 的原生拖拽功能
                             .window_control_area(WindowControlArea::Drag)
+                            // 左侧：头像和名称
+                            .child({
+                                let is_logged_in = self.state.read(cx).is_logged_in();
+                                let user = self.state.read(cx).user();
+                                
+                                if is_logged_in && user.is_some() {
+                                    let user = user.unwrap();
+                                    
+                                    // 获取头像路径
+                                    let avatar_path = if let Some(local_path) = &user.face_local {
+                                        local_path.clone()
+                                    } else if let Some(face_url) = &user.face {
+                                        face_url.clone()
+                                    } else {
+                                        String::new()
+                                    };
+                                    
+                                    let uname = user.uname.clone().unwrap_or_else(|| "用户".to_string());
+                                    
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_2()
+                                        .pl_3()
+                                        .child(
+                                            // 使用AnimatedAvatar组件（20px小尺寸）
+                                            cx.new(|_| AnimatedAvatar::new(avatar_path, px(20.0)))
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(match self.state.read(cx).theme() {
+                                                    Theme::Dark => rgb(0xffffff),
+                                                    Theme::Light => rgb(0x333333),
+                                                })
+                                                .child(uname)
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    // 未登录时显示空div
+                                    div().into_any_element()
+                                }
+                            })
+                            // 右侧：窗口控制按钮
                             .child(
                                 div()
                                     .flex()
@@ -292,8 +346,10 @@ impl Render for App {
                                                     })
                                                     .child(IconName::Minus)
                                             )
-                                            .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {
-                                                println!("Minimize window");
+                                            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                                                // 最小化窗口
+                                                window.minimize_window();
+                                                cx.stop_propagation();
                                             })
                                     )
                                     .child(
@@ -315,8 +371,10 @@ impl Render for App {
                                                     })
                                                     .child(IconName::WindowMaximize)
                                             )
-                                            .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {
-                                                println!("Maximize/Restore window");
+                                            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                                                // 切换全屏模式（类似最大化效果）
+                                                window.toggle_fullscreen();
+                                                cx.stop_propagation();
                                             })
                                     )
                                     .child(
@@ -353,10 +411,34 @@ impl Render for App {
                             .child(
                                 match current_page {
                                     Page::Home => {
-                                        div().child(cx.new(|cx| HomeView::new(self.state.clone(), window, cx)))
+                                        // 缓存 HomeView 实例，避免每次渲染都重新创建
+                                        if self.home_view.is_none() {
+                                            println!("🎯 [App] 首次创建 HomeView");
+                                            self.home_view = Some(cx.new(|cx| HomeView::new(self.state.clone(), window, cx)));
+                                        }
+                                        div()
+                                            .size_full()
+                                            .child(self.home_view.clone().unwrap())
+                                    }
+                                    Page::VideoList => {
+                                        // 缓存 VideoListView 实例
+                                        if self.video_list_view.is_none() {
+                                            println!("📹 [App] 首次创建 VideoListView");
+                                            self.video_list_view = Some(cx.new(|cx| VideoListView::new(self.state.clone(), window, cx)));
+                                        }
+                                        div()
+                                            .size_full()
+                                            .child(self.video_list_view.clone().unwrap())
                                     }
                                     Page::Settings => {
-                                        div().child(cx.new(|cx| SettingsView::new(self.state.clone(), window, cx)))
+                                        // 缓存 SettingsView 实例
+                                        if self.settings_view.is_none() {
+                                            println!("⚙️  [App] 首次创建 SettingsView");
+                                            self.settings_view = Some(cx.new(|cx| SettingsView::new(self.state.clone(), window, cx)));
+                                        }
+                                        div()
+                                            .size_full()
+                                            .child(self.settings_view.clone().unwrap())
                                     }
                                 }
                             )
@@ -383,7 +465,6 @@ impl Render for App {
             // 悬浮菜单层 - 完全独立于侧边栏布局
             .child({
                 if is_menu_open {
-                    let is_logged_in = self.state.read(cx).is_logged_in();
                     
                     div()
                         .absolute()
@@ -437,62 +518,6 @@ impl Render for App {
                                     }
                                 })
                         )
-                        // 如果已登录，显示退出登录选项
-                        .child({
-                            if is_logged_in {
-                                div()
-                                    .w_full()
-                                    .px_4()
-                                    .py_3()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .cursor(CursorStyle::PointingHand)
-                                    .hover(|style| style.bg(match theme {
-                                        Theme::Dark => rgb(0x2a2a2a),
-                                        Theme::Light => rgb(0xf0f0f0),
-                                    }))
-                                    .child(
-                                        div()
-                                            .text_color(match theme {
-                                                Theme::Dark => rgb(0xffffff),
-                                                Theme::Light => rgb(0x333333),
-                                            })
-                                            .child(IconName::ArrowRight)
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(match theme {
-                                                Theme::Dark => rgb(0xffffff),
-                                                Theme::Light => rgb(0x333333),
-                                            })
-                                            .child("退出登录")
-                                    )
-                                    .on_mouse_down(gpui::MouseButton::Left, {
-                                        let state = self.state.clone();
-                                        move |_, _, cx| {
-                                            state.update(cx, |s, _| {
-                                                s.set_logged_in(false);
-                                                s.set_cookies(crate::state::app_state::Cookies::default());
-                                                s.set_user(crate::state::app_state::UserProfile {
-                                                    uname: None,
-                                                    face: None,
-                                                    face_local: None,
-                                                    pendant_image: None,
-                                                });
-                                                s.set_qr_started(false);
-                                                s.set_qr_svg(None);
-                                                s.set_qrcode_key(None);
-                                                s.set_user_menu_open(false);
-                                                s.persist_login();
-                                            });
-                                        }
-                                    })
-                                    .into_any_element()
-                            } else {
-                                div().into_any_element()
-                            }
-                        })
                         .into_any_element()
                 } else {
                     div().into_any_element()

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Page {
     Home,
+    VideoList,
     Settings,
 }
 
@@ -25,6 +26,10 @@ pub struct AppState {
     qr_status: String,
     // UI状态
     user_menu_open: bool,
+    search_text: String,
+    // 视频列表数据
+    video_list: Vec<VideoInfo>,
+    selected_video_index: Option<usize>,
 }
 
 impl AppState {
@@ -41,6 +46,9 @@ impl AppState {
             qr_svg: None,
             qr_status: String::new(),
             user_menu_open: false,
+            search_text: String::new(),
+            video_list: Vec::new(),
+            selected_video_index: None,
         };
         if let Ok(Some(saved)) = crate::utils::load_json::<SavedLogin>("bili_cookies.json") {
             s.cookies = Some(saved.cookies.clone());
@@ -114,6 +122,17 @@ impl AppState {
     pub fn is_user_menu_open(&self) -> bool { self.user_menu_open }
     pub fn set_user_menu_open(&mut self, open: bool) { self.user_menu_open = open; }
     pub fn toggle_user_menu(&mut self) { self.user_menu_open = !self.user_menu_open; }
+    
+    // 搜索状态
+    #[allow(dead_code)]
+    pub fn search_text(&self) -> &str { &self.search_text }
+    pub fn set_search_text(&mut self, text: String) { self.search_text = text; }
+    
+    // 视频列表状态
+    pub fn video_list(&self) -> &[VideoInfo] { &self.video_list }
+    pub fn set_video_list(&mut self, videos: Vec<VideoInfo>) { self.video_list = videos; }
+    pub fn selected_video_index(&self) -> Option<usize> { self.selected_video_index }
+    pub fn set_selected_video_index(&mut self, index: Option<usize>) { self.selected_video_index = index; }
 }
 
 #[allow(non_snake_case)]
@@ -139,4 +158,19 @@ pub struct UserProfile {
     pub face: Option<String>,
     pub face_local: Option<String>, // 本地缓存的头像路径
     pub pendant_image: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VideoInfo {
+    pub aid: i64,
+    pub bvid: String,
+    pub title: String,
+    pub pic: String,
+    pub pic_local: Option<String>, // 本地缓存的封面路径
+    pub description: Option<String>,
+    pub pubdate: i64,
+    pub duration: i64,
+    pub view_count: i64,
+    pub like_count: i64,
+    pub is_live_replay: bool,
 }

@@ -17,10 +17,20 @@ pub fn save_json<T: Serialize>(path: &str, value: &T) -> anyhow::Result<()> {
 
 /// 下载网络图片到本地缓存目录，返回绝对路径（使用Arc<Path>格式）
 pub fn download_avatar(url: &str) -> anyhow::Result<std::sync::Arc<Path>> {
-    println!("[Utils] 📥 开始下载头像: {}", url);
+    download_image(url, "avatar_cache", "头像")
+}
+
+/// 下载视频封面到本地缓存目录，返回绝对路径（使用Arc<Path>格式）
+pub fn download_cover(url: &str) -> anyhow::Result<std::sync::Arc<Path>> {
+    download_image(url, "cover_cache", "封面")
+}
+
+/// 通用图片下载函数
+fn download_image(url: &str, cache_dir_name: &str, image_type: &str) -> anyhow::Result<std::sync::Arc<Path>> {
+    println!("[Utils] 📥 开始下载{}: {}", image_type, url);
     
     // 创建缓存目录
-    let cache_dir = PathBuf::from("avatar_cache");
+    let cache_dir = PathBuf::from(cache_dir_name);
     fs::create_dir_all(&cache_dir)?;
     let cache_dir_abs = cache_dir.canonicalize()?;
     println!("[Utils] 📁 缓存目录: {:?}", cache_dir_abs);
@@ -38,11 +48,22 @@ pub fn download_avatar(url: &str) -> anyhow::Result<std::sync::Arc<Path>> {
     
     // 如果文件不存在，下载图片
     if !file_path.exists() {
-        println!("[Utils] ⬇️ 正在下载...");
-        let response = reqwest::blocking::get(url)?;
+        println!("[Utils] ⬇️ 正在下载{}...", image_type);
+        
+        // 添加User-Agent和Referer头，避免CORS问题
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .build()?;
+        
+        let response = client.get(url)
+            .header("Referer", "https://www.bilibili.com/")
+            .send()?;
+        
         let bytes = response.bytes()?;
         println!("[Utils] 💾 下载完成，大小: {} bytes", bytes.len());
         fs::write(&file_path, bytes)?;
+    } else {
+        println!("[Utils] ✅ {}已存在缓存", image_type);
     }
     
     // 获取绝对路径并转换为Arc<Path>
