@@ -21,3 +21,14 @@ winresource = "0.1"
 [[bin]]
 name = "my-gpui-app"
 path = "src/main.rs"
+
+# macOS 应用程序包配置
+[package.metadata.bundle]
+name = "AI Agent"
+identifier = "com.ai-agent.app"
+icon = ["assets/logo.icns"]
+version = "0.1.0"
+short_description = "AI Agent Application"
+copyright = "Copyright (c) 2024 AI Agent"
+category = "Developer Tool"
+osx_minimum_system_version = "10.13"

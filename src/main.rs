@@ -11,19 +11,27 @@ mod assets;
 use app::App;
 use assets::Assets;
 
-#[cfg(target_os = "windows")]
+// macOS 和 Windows 都支持系统托盘
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
 
 fn main() {
-    // 在Windows上创建系统托盘图标
-    #[cfg(target_os = "windows")]
-    let _tray_icon = tray::create_tray_icon();
-    
     let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+
+        // 在 GPUI 应用初始化之后创建系统托盘图标
+        // 这样可以避免与 GPUI 的 NSApplication 初始化冲突
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            if let Some(tray_icon) = tray::create_tray_icon() {
+                // 使用 Box::leak 让托盘图标在整个应用生命周期中保持存在
+                // 这是必要的，因为如果托盘图标被销毁，系统托盘中的图标也会消失
+                Box::leak(Box::new(tray_icon));
+            }
+        }
 
         cx.spawn(async move |cx| {
             cx.open_window(
