@@ -31,6 +31,8 @@ struct AnimationData {
 struct AnimationPlayState {
     current_frame: usize,
     last_update: std::time::Instant,
+    warmed_up: bool, // 标记是否已经预热过（快速循环一遍所有帧）
+    warmup_frame: usize, // 预热时的帧索引
 }
 
 /// 动画头像组件，支持动态webp和gif
@@ -108,11 +110,13 @@ impl AnimatedAvatar {
                     cache.insert(path.clone(), AnimationStatus::Animated(animation_data.clone()));
                     drop(cache);
                     
-                    // 初始化播放状态
+                    // 初始化播放状态（预热模式）
                     let mut states = ANIMATION_PLAY_STATES.lock().unwrap();
                     states.entry(path.clone()).or_insert_with(|| AnimationPlayState {
                         current_frame: 0,
                         last_update: std::time::Instant::now(),
+                        warmed_up: false,  // 需要预热
+                        warmup_frame: 0,   // 从第0帧开始预热
                     });
                     drop(states);
                     
@@ -234,26 +238,50 @@ impl Render for AnimatedAvatar {
                 let mut states = ANIMATION_PLAY_STATES.lock().unwrap();
                 let state = states.get_mut(&self.image_path).unwrap();
                 
-                // 检查是否需要切换到下一帧
-                let current_delay = animation_data.frame_delays.get(state.current_frame)
-                    .copied()
-                    .unwrap_or(Duration::from_millis(100));
-                
-                let elapsed = state.last_update.elapsed();
-                if elapsed >= current_delay {
-                    // 切换到下一帧
-                    state.current_frame = (state.current_frame + 1) % total_frames;
-                    state.last_update = std::time::Instant::now();
+                // GPU预热阶段：快速循环所有帧一次，让GPUI加载到GPU
+                if !state.warmed_up {
+                    // 每次render推进预热帧
+                    state.warmup_frame += 1;
+                    
+                    if state.warmup_frame >= total_frames {
+                        // 预热完成，开始正常播放
+                        state.warmed_up = true;
+                        state.current_frame = 0;
+                        state.last_update = std::time::Instant::now();
+                        println!("[AnimatedAvatar] GPU预热完成: {}, 共{}帧", self.image_path, total_frames);
+                    }
+                    
+                    // 预热期间显示第一帧（用户看不到快速切换）
+                    let warmup_frame_to_show = &animation_data.frames[state.warmup_frame.min(total_frames - 1)];
+                    drop(states);
+                    
+                    img(warmup_frame_to_show.clone())
+                        .size(self.size)
+                        .rounded_full()
+                        .into_any_element()
+                } else {
+                    // 正常播放模式
+                    // 检查是否需要切换到下一帧
+                    let current_delay = animation_data.frame_delays.get(state.current_frame)
+                        .copied()
+                        .unwrap_or(Duration::from_millis(100));
+                    
+                    let elapsed = state.last_update.elapsed();
+                    if elapsed >= current_delay {
+                        // 切换到下一帧
+                        state.current_frame = (state.current_frame + 1) % total_frames;
+                        state.last_update = std::time::Instant::now();
+                    }
+                    
+                    let current_frame = &animation_data.frames[state.current_frame];
+                    drop(states);
+                    
+                    // 显示当前帧（刷新由App全局驱动器处理）
+                    img(current_frame.clone())
+                        .size(self.size)
+                        .rounded_full()
+                        .into_any_element()
                 }
-                
-                let current_frame = &animation_data.frames[state.current_frame];
-                drop(states);
-                
-                // 显示当前帧（刷新由App全局驱动器处理）
-                img(current_frame.clone())
-                    .size(self.size)
-                    .rounded_full()
-                    .into_any_element()
             }
             Some(AnimationStatus::Checking) | None | Some(AnimationStatus::Static) => {
                 // 检测中、未知或静态图片，都显示静态图片
