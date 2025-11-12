@@ -14,6 +14,8 @@ image = "0.25"
 rust-embed = { version = "8.0", features = ["debug-embed"] }
 qrcode = "0.13"
 futures = "0.3"
+reqwest = { version = "0.12", features = ["cookies", "json"] }
+tokio = { version = "1.0", features = ["rt", "time"] }
 
 [build-dependencies]
 winresource = "0.1"

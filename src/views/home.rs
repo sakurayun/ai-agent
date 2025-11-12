@@ -2,10 +2,11 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::*;
 use crate::state::app_state::{AppState, Theme, Cookies, UserProfile};
-use gpui::http_client::{self, AsyncBody, Method, HttpClient};
 use qrcode::QrCode;
 use qrcode::render::svg;
-use futures::AsyncReadExt;
+
+// Bilibili API 的标准 User-Agent
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 pub struct HomeView {
     app_state: Entity<AppState>,
@@ -22,24 +23,27 @@ impl HomeView {
     }
 
     fn request_qr(app_state: Entity<AppState>, cx: &mut Context<Self>) {
-        let http = cx.http_client();
         cx.spawn(async move |_: WeakEntity<HomeView>, cx: &mut AsyncApp| {
             // 1) 获取二维码
             let url = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
             println!("\n========== API Request ==========");
             println!("Method: GET");
             println!("URL: {}", url);
-            println!("Headers: None");
+            println!("Headers:");
+            println!("  User-Agent: {}", USER_AGENT);
             println!("Body: None");
             println!("=================================\n");
             
-            let mut response = http
-                .get(url, AsyncBody::default(), true)
+            let client = reqwest::Client::new();
+            let response = client
+                .get(url)
+                .header("User-Agent", USER_AGENT)
+                .send()
                 .await?;
             
             println!("\n========== API Response ==========");
             println!("URL: {}", url);
-            println!("Status: {:?}", response.status());
+            println!("Status: {}", response.status());
             println!("Response Headers:");
             for (key, value) in response.headers().iter() {
                 if let Ok(val_str) = value.to_str() {
@@ -47,11 +51,10 @@ impl HomeView {
                 }
             }
             
-            let mut body_bytes = Vec::new();
-            response.body_mut().read_to_end(&mut body_bytes).await?;
-            let body = String::from_utf8_lossy(&body_bytes).into_owned();
+            let body = response.text().await?;
             println!("Response Body: {}", body);
             println!("==================================\n");
+            
             #[derive(serde::Deserialize)]
             struct GenerateResp { code: i64, data: Option<GenData> }
             #[derive(serde::Deserialize)]
@@ -76,7 +79,11 @@ impl HomeView {
 
             // 3) 开始轮询
             use std::time::Duration;
+            let client = reqwest::Client::builder()
+                .cookie_store(true)
+                .build()?;
             let start = std::time::Instant::now();
+            
             loop {
                 if start.elapsed() > Duration::from_secs(180) {
                     app_state.update(cx, |s, _| { s.set_qr_status("二维码已超时，请刷新"); })?;
@@ -92,15 +99,20 @@ impl HomeView {
                 println!("\n========== API Request ==========");
                 println!("Method: GET");
                 println!("URL: {}", url);
-                println!("Headers: None");
+                println!("Headers:");
+                println!("  User-Agent: {}", USER_AGENT);
                 println!("Body: None");
                 println!("=================================\n");
                 
-                let mut response = http.get(&url, AsyncBody::default(), true).await?;
+                let response = client
+                    .get(&url)
+                    .header("User-Agent", USER_AGENT)
+                    .send()
+                    .await?;
                 
                 println!("\n========== API Response ==========");
                 println!("URL: {}", url);
-                println!("Status: {:?}", response.status());
+                println!("Status: {}", response.status());
                 println!("Response Headers:");
                 for (key, value) in response.headers().iter() {
                     if let Ok(val_str) = value.to_str() {
@@ -109,9 +121,7 @@ impl HomeView {
                 }
                 
                 let headers = response.headers().clone();
-                let mut bytes = Vec::new();
-                response.body_mut().read_to_end(&mut bytes).await?;
-                let body = String::from_utf8_lossy(&bytes).into_owned();
+                let body = response.text().await?;
                 println!("Response Body: {}", body);
                 println!("==================================\n");
 
@@ -121,11 +131,11 @@ impl HomeView {
                 struct PollResp { code: i64, data: Option<PollData> }
                 let parsed: PollResp = serde_json::from_str(&body).unwrap_or(PollResp{ code: -1, data: None });
                 if parsed.code != 0 {
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
                 let Some(data) = parsed.data else {
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 };
 
@@ -135,9 +145,11 @@ impl HomeView {
                         let mut cookies = Cookies::default();
                         for (_k, v) in headers.iter().filter(|(k, _)| k.as_str().eq_ignore_ascii_case("set-cookie")) {
                             if let Ok(line) = v.to_str() {
-                                for kv in line.split(';') {
-                                    let kv = kv.trim();
-                                    if let Some((k, v)) = kv.split_once('=') {
+                                // 解析 Set-Cookie 头，提取第一个键值对
+                                if let Some(first_part) = line.split(';').next() {
+                                    if let Some((k, v)) = first_part.split_once('=') {
+                                        let k = k.trim();
+                                        let v = v.trim();
                                         match k {
                                             "SESSDATA" => cookies.SESSDATA = v.to_string(),
                                             "DedeUserID" => cookies.DedeUserID = Some(v.to_string()),
@@ -159,7 +171,7 @@ impl HomeView {
                         })?;
 
                         // 获取用户信息
-                        Self::fetch_user_info(http.clone(), app_state.clone(), cx).await.ok();
+                        Self::fetch_user_info(app_state.clone(), cx).await.ok();
                         break;
                     }
                     86038 => {
@@ -174,17 +186,20 @@ impl HomeView {
                         println!("\n========== API Request (Refresh QR) ==========");
                         println!("Method: GET");
                         println!("URL: {}", refresh_url);
-                        println!("Headers: None");
+                        println!("Headers:");
+                        println!("  User-Agent: {}", USER_AGENT);
                         println!("Body: None");
                         println!("==============================================\n");
                         
-                        let mut response = http
-                            .get(refresh_url, AsyncBody::default(), true)
+                        let response = client
+                            .get(refresh_url)
+                            .header("User-Agent", USER_AGENT)
+                            .send()
                             .await?;
                         
                         println!("\n========== API Response (Refresh QR) ==========");
                         println!("URL: {}", refresh_url);
-                        println!("Status: {:?}", response.status());
+                        println!("Status: {}", response.status());
                         println!("Response Headers:");
                         for (key, value) in response.headers().iter() {
                             if let Ok(val_str) = value.to_str() {
@@ -192,9 +207,7 @@ impl HomeView {
                             }
                         }
                         
-                        let mut body_bytes = Vec::new();
-                        response.body_mut().read_to_end(&mut body_bytes).await?;
-                        let body = String::from_utf8_lossy(&body_bytes).into_owned();
+                        let body = response.text().await?;
                         println!("Response Body: {}", body);
                         println!("===============================================\n");
                         let parsed: GenerateResp = serde_json::from_str(&body)?;
@@ -217,13 +230,13 @@ impl HomeView {
                     }
                     _ => {}
                 }
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Ok::<(), anyhow::Error>(())
         }).detach();
     }
 
-    async fn fetch_user_info(http: std::sync::Arc<dyn HttpClient>, app_state: Entity<AppState>, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    async fn fetch_user_info(app_state: Entity<AppState>, cx: &mut AsyncApp) -> anyhow::Result<()> {
         let cookie_header = app_state.read_with(cx, |s, _| s.cookie_header())?;
         let Some(cookie) = cookie_header else { return Ok(()); };
         
@@ -232,20 +245,22 @@ impl HomeView {
         println!("Method: GET");
         println!("URL: {}", url);
         println!("Request Headers:");
+        println!("  User-Agent: {}", USER_AGENT);
         println!("  Cookie: {}", cookie);
         println!("Body: None");
         println!("=============================================\n");
         
-        let req = http_client::Request::builder()
-            .method(Method::GET)
-            .uri(url)
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(url)
+            .header("User-Agent", USER_AGENT)
             .header("Cookie", cookie)
-            .body(AsyncBody::default())?;
-        let mut resp = http.send(req).await?;
+            .send()
+            .await?;
         
         println!("\n========== API Response (User Info) ==========");
         println!("URL: {}", url);
-        println!("Status: {:?}", resp.status());
+        println!("Status: {}", resp.status());
         println!("Response Headers:");
         for (key, value) in resp.headers().iter() {
             if let Ok(val_str) = value.to_str() {
@@ -253,11 +268,10 @@ impl HomeView {
             }
         }
         
-        let mut bytes = Vec::new();
-        resp.body_mut().read_to_end(&mut bytes).await?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let text = resp.text().await?;
         println!("Response Body: {}", text);
         println!("==============================================\n");
+        
         #[derive(serde::Deserialize)]
         struct NavPendant { image: Option<String> }
         #[derive(serde::Deserialize)]
@@ -284,10 +298,9 @@ impl Render for HomeView {
         if !is_logged && !started {
             Self::start_qr_flow(self.app_state.clone(), cx);
         } else if is_logged && !has_user {
-            let http = cx.http_client();
             let app_state = self.app_state.clone();
             cx.spawn(async move |_: WeakEntity<HomeView>, cx: &mut AsyncApp| {
-                Self::fetch_user_info(http, app_state, cx).await.ok();
+                Self::fetch_user_info(app_state, cx).await.ok();
                 Ok::<(), anyhow::Error>(())
             })
             .detach();
@@ -393,7 +406,7 @@ impl Render for HomeView {
                 );
         }
 
-        // 未登录，显示扫码登录页面
+        // 未登录，显示扫码登录页面（去除背景，保持居中）
         div()
             .size_full()
             .flex()
@@ -406,10 +419,9 @@ impl Render for HomeView {
                     .flex()
                     .flex_col()
                     .items_center()
+                    .justify_center()
                     .gap_4()
                     .p_8()
-                    .rounded_lg()
-                    .bg(match theme { Theme::Dark => rgb(0x0d0d0d), Theme::Light => rgb(0xf5f5f5) })
                     .child(
                         div().text_xl().font_weight(FontWeight::BOLD).child("扫码登录")
                     )
@@ -421,7 +433,7 @@ impl Render for HomeView {
                                 .object_fit(ObjectFit::Contain)
                                 .into_any_element()
                         } else {
-                            div().w(px(240.0)).h(px(240.0)).rounded_md().bg(match theme { Theme::Dark => rgb(0x1a1a1a), Theme::Light => rgb(0xeeeeee) }).into_any_element()
+                            div().w(px(240.0)).h(px(240.0)).into_any_element()
                         }
                     })
                     .child({
