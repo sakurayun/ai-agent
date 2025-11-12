@@ -23,6 +23,8 @@ pub struct AppState {
     qrcode_key: Option<String>,
     qr_svg: Option<Vec<u8>>, // SVG bytes
     qr_status: String,
+    // UI状态
+    user_menu_open: bool,
 }
 
 impl AppState {
@@ -38,10 +40,12 @@ impl AppState {
             qrcode_key: None,
             qr_svg: None,
             qr_status: String::new(),
+            user_menu_open: false,
         };
         if let Ok(Some(saved)) = crate::utils::load_json::<SavedLogin>("bili_cookies.json") {
             s.cookies = Some(saved.cookies.clone());
             s.logged_in = saved.logged_in;
+            s.user = saved.user.clone();
         }
         s
     }
@@ -88,7 +92,11 @@ impl AppState {
     }
 
     pub fn persist_login(&self) {
-        let saved = SavedLogin { logged_in: self.logged_in, cookies: self.cookies.clone().unwrap_or_default() };
+        let saved = SavedLogin { 
+            logged_in: self.logged_in, 
+            cookies: self.cookies.clone().unwrap_or_default(),
+            user: self.user.clone(),
+        };
         let _ = crate::utils::save_json("bili_cookies.json", &saved);
     }
 
@@ -101,6 +109,11 @@ impl AppState {
     pub fn set_qr_svg(&mut self, data: Option<Vec<u8>>) { self.qr_svg = data; }
     pub fn qr_status(&self) -> &str { &self.qr_status }
     pub fn set_qr_status(&mut self, s: impl Into<String>) { self.qr_status = s.into(); }
+    
+    // UI状态
+    pub fn is_user_menu_open(&self) -> bool { self.user_menu_open }
+    pub fn set_user_menu_open(&mut self, open: bool) { self.user_menu_open = open; }
+    pub fn toggle_user_menu(&mut self) { self.user_menu_open = !self.user_menu_open; }
 }
 
 #[allow(non_snake_case)]
@@ -117,11 +130,13 @@ pub struct Cookies {
 pub struct SavedLogin {
     pub logged_in: bool,
     pub cookies: Cookies,
+    pub user: Option<UserProfile>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct UserProfile {
     pub uname: Option<String>,
     pub face: Option<String>,
+    pub face_local: Option<String>, // 本地缓存的头像路径
     pub pendant_image: Option<String>,
 }

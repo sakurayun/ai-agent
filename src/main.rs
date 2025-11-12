@@ -2,11 +2,11 @@ use gpui::*;
 use gpui_component::*;
 
 mod app;
-mod views;
-mod state;
-mod components;
-mod utils;
 mod assets;
+mod components;
+mod state;
+mod utils;
+mod views;
 
 use app::App;
 use assets::Assets;
@@ -19,6 +19,9 @@ fn main() {
     let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
+        // TODO: 设置 HTTP client 以支持远程图片加载
+        // 目前先使用本地头像缓存
+        
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
 

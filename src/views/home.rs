@@ -1,12 +1,29 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use gpui::*;
 use gpui_component::*;
 use crate::state::app_state::{AppState, Theme, Cookies, UserProfile};
+use crate::components::AnimatedAvatar;
 use qrcode::QrCode;
 use qrcode::render::svg;
 
 // Bilibili API 的标准 User-Agent
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// 全局 Tokio runtime，参考 Zed 的实现
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn get_runtime_handle() -> tokio::runtime::Handle {
+    tokio::runtime::Handle::try_current().unwrap_or_else(|_| {
+        let runtime = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("Failed to initialize Tokio runtime")
+        });
+        runtime.handle().clone()
+    })
+}
 
 pub struct HomeView {
     app_state: Entity<AppState>,
@@ -23,6 +40,9 @@ impl HomeView {
     }
 
     fn request_qr(app_state: Entity<AppState>, cx: &mut Context<Self>) {
+        // 获取 Tokio runtime handle
+        let handle = get_runtime_handle();
+        
         cx.spawn(async move |_: WeakEntity<HomeView>, cx: &mut AsyncApp| {
             // 1) 获取二维码
             let url = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
@@ -35,11 +55,14 @@ impl HomeView {
             println!("=================================\n");
             
             let client = reqwest::Client::new();
-            let response = client
-                .get(url)
-                .header("User-Agent", USER_AGENT)
-                .send()
-                .await?;
+            // 使用 Tokio runtime handle 执行异步请求
+            let response = handle.spawn(async move {
+                client
+                    .get(url)
+                    .header("User-Agent", USER_AGENT)
+                    .send()
+                    .await
+            }).await??;
             
             println!("\n========== API Response ==========");
             println!("URL: {}", url);
@@ -83,6 +106,7 @@ impl HomeView {
                 .cookie_store(true)
                 .build()?;
             let start = std::time::Instant::now();
+            let handle_clone = handle.clone();
             
             loop {
                 if start.elapsed() > Duration::from_secs(180) {
@@ -104,11 +128,17 @@ impl HomeView {
                 println!("Body: None");
                 println!("=================================\n");
                 
-                let response = client
-                    .get(&url)
-                    .header("User-Agent", USER_AGENT)
-                    .send()
-                    .await?;
+                let response = handle_clone.spawn({
+                    let client = client.clone();
+                    let url = url.clone();
+                    async move {
+                        client
+                            .get(&url)
+                            .header("User-Agent", USER_AGENT)
+                            .send()
+                            .await
+                    }
+                }).await??;
                 
                 println!("\n========== API Response ==========");
                 println!("URL: {}", url);
@@ -131,11 +161,15 @@ impl HomeView {
                 struct PollResp { code: i64, data: Option<PollData> }
                 let parsed: PollResp = serde_json::from_str(&body).unwrap_or(PollResp{ code: -1, data: None });
                 if parsed.code != 0 {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    handle_clone.spawn(async {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }).await?;
                     continue;
                 }
                 let Some(data) = parsed.data else {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    handle_clone.spawn(async {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }).await?;
                     continue;
                 };
 
@@ -171,6 +205,7 @@ impl HomeView {
                         })?;
 
                         // 获取用户信息
+                        println!("登录成功，正在获取用户信息并设置测试头像...");
                         Self::fetch_user_info(app_state.clone(), cx).await.ok();
                         break;
                     }
@@ -191,11 +226,16 @@ impl HomeView {
                         println!("Body: None");
                         println!("==============================================\n");
                         
-                        let response = client
-                            .get(refresh_url)
-                            .header("User-Agent", USER_AGENT)
-                            .send()
-                            .await?;
+                        let response = handle_clone.spawn({
+                            let client = client.clone();
+                            async move {
+                                client
+                                    .get(refresh_url)
+                                    .header("User-Agent", USER_AGENT)
+                                    .send()
+                                    .await
+                            }
+                        }).await??;
                         
                         println!("\n========== API Response (Refresh QR) ==========");
                         println!("URL: {}", refresh_url);
@@ -230,7 +270,9 @@ impl HomeView {
                     }
                     _ => {}
                 }
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                handle_clone.spawn(async {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }).await?;
             }
             Ok::<(), anyhow::Error>(())
         }).detach();
@@ -250,13 +292,16 @@ impl HomeView {
         println!("Body: None");
         println!("=============================================\n");
         
+        let handle = get_runtime_handle();
         let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Cookie", cookie)
-            .send()
-            .await?;
+        let resp = handle.spawn(async move {
+            client
+                .get(url)
+                .header("User-Agent", USER_AGENT)
+                .header("Cookie", cookie)
+                .send()
+                .await
+        }).await??;
         
         println!("\n========== API Response (User Info) ==========");
         println!("URL: {}", url);
@@ -275,14 +320,54 @@ impl HomeView {
         #[derive(serde::Deserialize)]
         struct NavPendant { image: Option<String> }
         #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
         struct NavData { uname: Option<String>, face: Option<String>, pendant: Option<NavPendant> }
         #[derive(serde::Deserialize)]
         struct NavResp { code: i64, data: Option<NavData> }
         let parsed: NavResp = serde_json::from_str(&text).unwrap_or(NavResp{ code: -1, data: None });
+        println!("[HomeView] 🔍 解析用户信息响应，code: {}", parsed.code);
         if parsed.code == 0 {
             if let Some(d) = parsed.data {
-                let user = UserProfile { uname: d.uname, face: d.face, pendant_image: d.pendant.and_then(|p| p.image) };
-                app_state.update(cx, |s, _| s.set_user(user))?;
+                println!("[HomeView] 📝 原始头像URL: {:?}", d.face);
+                
+                // 下载头像到本地
+                let face_local = if let Some(face_url) = &d.face {
+                    match crate::utils::download_avatar(face_url) {
+                        Ok(path_arc) => {
+                            // 将 Arc<Path> 转换为字符串用于存储
+                            let path_str = path_arc.display().to_string();
+                            println!("[HomeView] ✅ 头像下载成功: {}", path_str);
+                            Some(path_str)
+                        }
+                        Err(e) => {
+                            println!("[HomeView] ❌ 头像下载失败: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                
+                // 使用本地缓存路径优先，没有则使用网络URL
+                let user = UserProfile { 
+                    uname: d.uname.clone(), 
+                    face: d.face.clone(),
+                    face_local, // 本地缓存路径
+                    pendant_image: d.pendant.and_then(|p| p.image) 
+                };
+                
+                println!("[HomeView] ✅ 用户信息构建完成");
+                println!("[HomeView]    - 用户名: {:?}", user.uname);
+                println!("[HomeView]    - 头像URL: {:?}", user.face);
+                println!("[HomeView]    - 本地头像: {:?}", user.face_local);
+                println!("[HomeView]    - 挂件图片: {:?}", user.pendant_image);
+                
+                app_state.update(cx, |s, cx| {
+                    s.set_user(user);
+                    s.persist_login(); // 保存用户信息到文件
+                    cx.notify(); // 触发重新渲染
+                })?;
+                println!("[HomeView] 🔄 触发UI重新渲染");
             }
         }
         Ok(())
@@ -334,6 +419,20 @@ impl Render for HomeView {
                         )
                         .child({
                             if let Some(user) = self.app_state.read(cx).user() {
+                                // 克隆用户数据以避免借用检查问题
+                                let avatar_path = if let Some(local_path) = &user.face_local {
+
+                                    local_path.clone()
+                                } else if let Some(face_url) = &user.face {
+                                    println!("[HomeView] 🌐 使用远程URL: {}", face_url);
+                                    face_url.clone()
+                                } else {
+                                    println!("[HomeView] ⚠️ 没有头像数据");
+                                    String::new()
+                                };
+                                let pendant_image = user.pendant_image.clone();
+                                let uname = user.uname.clone();
+                                
                                 div()
                                     .flex()
                                     .flex_col()
@@ -347,15 +446,12 @@ impl Render for HomeView {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(
-                                                img(user.face.clone().unwrap_or_default())
-                                                    .w(px(72.0))
-                                                    .h(px(72.0))
-                                                    .rounded_full()
-                                                    .object_fit(ObjectFit::Cover)
-                                            )
                                             .child({
-                                                if let Some(p) = &user.pendant_image {
+                                                // 使用AnimatedAvatar组件支持动画webp
+                                                cx.new(|_| AnimatedAvatar::new(avatar_path, px(72.0)))
+                                            })
+                                            .child({
+                                                if let Some(p) = pendant_image {
                                                     img(p.clone())
                                                         .absolute()
                                                         .top(px(-8.0))
@@ -372,7 +468,7 @@ impl Render for HomeView {
                                     .child(
                                         div()
                                             .text_xl()
-                                            .child(user.uname.clone().unwrap_or_else(|| "用户".to_string()))
+                                            .child(uname.unwrap_or_else(|| "用户".to_string()))
                                     )
                                     .into_any_element()
                             } else {
@@ -393,6 +489,7 @@ impl Render for HomeView {
                                         s.set_user(UserProfile {
                                             uname: None,
                                             face: None,
+                                            face_local: None,
                                             pendant_image: None,
                                         });
                                         s.set_qr_started(false);

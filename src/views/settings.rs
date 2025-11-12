@@ -1,7 +1,7 @@
-use gpui::*;
-use gpui_component::*;
-use gpui_component::button::ButtonVariants;
 use crate::state::app_state::{AppState, Theme};
+use gpui::*;
+use gpui_component::button::ButtonVariants;
+use gpui_component::*;
 
 pub struct SettingsView {
     input_state: Entity<input::InputState>,
@@ -15,8 +15,8 @@ impl SettingsView {
                 .placeholder("Enter your name...")
                 .default_value("GPUI User")
         });
-        
-        Self { 
+
+        Self {
             input_state,
             app_state,
         }
@@ -45,7 +45,7 @@ impl Render for SettingsView {
                     .text_2xl()
                     .font_weight(FontWeight::BOLD)
                     .mb_2()
-                    .child("Settings")
+                    .child("Settings"),
             )
             .child(
                 div()
@@ -54,7 +54,7 @@ impl Render for SettingsView {
                         Theme::Dark => rgb(0xaaaaaa),
                         Theme::Light => rgb(0x666666),
                     })
-                    .child("Configure your application preferences.")
+                    .child("Configure your application preferences."),
             )
             .child(
                 div()
@@ -78,7 +78,7 @@ impl Render for SettingsView {
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
                             .mb_2()
-                            .child("User Information")
+                            .child("User Information"),
                     )
                     .child(
                         div()
@@ -89,28 +89,24 @@ impl Render for SettingsView {
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child("Name")
+                                    .child("Name"),
                             )
-                            .child(
-                                self.input_state.clone()
-                            )
+                            .child(self.input_state.clone()),
                     )
                     .child(
-                        div()
-                            .mt_4()
-                            .child(
-                                button::Button::new("save")
-                                    .primary()
-                                    .label("Save Settings")
-                                    .on_click({
-                                        let input_state = self.input_state.clone();
-                                        move |_, _, cx| {
-                                            let value = input_state.read(cx).text();
-                                            println!("Settings saved! Name: {}", value);
-                                        }
-                                    })
-                            )
-                    )
+                        div().mt_4().child(
+                            button::Button::new("save")
+                                .primary()
+                                .label("Save Settings")
+                                .on_click({
+                                    let input_state = self.input_state.clone();
+                                    move |_, _, cx| {
+                                        let value = input_state.read(cx).text();
+                                        println!("Settings saved! Name: {}", value);
+                                    }
+                                }),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -134,7 +130,7 @@ impl Render for SettingsView {
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
                             .mb_1()
-                            .child("Appearance")
+                            .child("Appearance"),
                     )
                     .child(
                         div()
@@ -144,67 +140,63 @@ impl Render for SettingsView {
                                 Theme::Light => rgb(0x666666),
                             })
                             .mb_2()
-                            .child("Tip: Click the logo to quickly toggle theme")
+                            .child("Tip: Click the logo to quickly toggle theme"),
                     )
                     .child(
                         div()
                             .flex()
                             .gap_2()
-                            .child(
-                                if theme == Theme::Light {
-                                    button::Button::new("theme-light")
-                                        .primary()  // 高亮当前选中的主题
-                                        .label("Light ✓")
-                                        .on_click({
-                                            let app_state = self.app_state.clone();
-                                            move |_, _, cx| {
-                                                app_state.update(cx, |state, _| {
-                                                    state.set_theme(Theme::Light);
-                                                });
-                                            }
-                                        })
-                                } else {
-                                    button::Button::new("theme-light")
-                                        .outline()
-                                        .label("Light")
-                                        .on_click({
-                                            let app_state = self.app_state.clone();
-                                            move |_, _, cx| {
-                                                app_state.update(cx, |state, _| {
-                                                    state.set_theme(Theme::Light);
-                                                });
-                                            }
-                                        })
-                                }
-                            )
-                            .child(
-                                if theme == Theme::Dark {
-                                    button::Button::new("theme-dark")
-                                        .primary()  // 高亮当前选中的主题
-                                        .label("Dark ✓")
-                                        .on_click({
-                                            let app_state = self.app_state.clone();
-                                            move |_, _, cx| {
-                                                app_state.update(cx, |state, _| {
-                                                    state.set_theme(Theme::Dark);
-                                                });
-                                            }
-                                        })
-                                } else {
-                                    button::Button::new("theme-dark")
-                                        .outline()
-                                        .label("Dark")
-                                        .on_click({
-                                            let app_state = self.app_state.clone();
-                                            move |_, _, cx| {
-                                                app_state.update(cx, |state, _| {
-                                                    state.set_theme(Theme::Dark);
-                                                });
-                                            }
-                                        })
-                                }
-                            )
-                    )
+                            .child(if theme == Theme::Light {
+                                button::Button::new("theme-light")
+                                    .primary() // 高亮当前选中的主题
+                                    .label("Light ✓")
+                                    .on_click({
+                                        let app_state = self.app_state.clone();
+                                        move |_, _, cx| {
+                                            app_state.update(cx, |state, _| {
+                                                state.set_theme(Theme::Light);
+                                            });
+                                        }
+                                    })
+                            } else {
+                                button::Button::new("theme-light")
+                                    .outline()
+                                    .label("Light")
+                                    .on_click({
+                                        let app_state = self.app_state.clone();
+                                        move |_, _, cx| {
+                                            app_state.update(cx, |state, _| {
+                                                state.set_theme(Theme::Light);
+                                            });
+                                        }
+                                    })
+                            })
+                            .child(if theme == Theme::Dark {
+                                button::Button::new("theme-dark")
+                                    .primary() // 高亮当前选中的主题
+                                    .label("Dark ✓")
+                                    .on_click({
+                                        let app_state = self.app_state.clone();
+                                        move |_, _, cx| {
+                                            app_state.update(cx, |state, _| {
+                                                state.set_theme(Theme::Dark);
+                                            });
+                                        }
+                                    })
+                            } else {
+                                button::Button::new("theme-dark")
+                                    .outline()
+                                    .label("Dark")
+                                    .on_click({
+                                        let app_state = self.app_state.clone();
+                                        move |_, _, cx| {
+                                            app_state.update(cx, |state, _| {
+                                                state.set_theme(Theme::Dark);
+                                            });
+                                        }
+                                    })
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -227,7 +219,7 @@ impl Render for SettingsView {
                         div()
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("About")
+                            .child("About"),
                     )
                     .child(
                         div()
@@ -236,7 +228,7 @@ impl Render for SettingsView {
                                 Theme::Dark => rgb(0xaaaaaa),
                                 Theme::Light => rgb(0x666666),
                             })
-                            .child("Version: 0.1.0")
+                            .child("Version: 0.1.0"),
                     )
                     .child(
                         div()
@@ -245,8 +237,8 @@ impl Render for SettingsView {
                                 Theme::Dark => rgb(0xaaaaaa),
                                 Theme::Light => rgb(0x666666),
                             })
-                            .child("Built with Rust and GPUI")
-                    )
+                            .child("Built with Rust and GPUI"),
+                    ),
             )
     }
 }
